@@ -1,11 +1,14 @@
-from comet_ml import Experiment, Optimizer
+import wandb
 
 import argparse
 import torch
 import os
 import cogmen
 
-log = cogmen.utils.get_logger()
+import json
+from datetime import datetime
+
+wandb_path = '../wandb.auth'
 
 
 def func(experiment, trainset, devset, testset, model, opt, sched, args):
@@ -41,6 +44,10 @@ def func(experiment, trainset, devset, testset, model, opt, sched, args):
 
 def main(args):
     cogmen.utils.set_seed(args.seed)
+
+    log_name = args.architecture
+    log = cogmen.utils.get_logger(log_name)
+    log.debug(args)
 
     if args.emotion:
         args.data = os.path.join(
@@ -82,11 +89,29 @@ def main(args):
     opt.set_parameters(model.parameters(), args.optimizer)
     sched = opt.get_scheduler(args.scheduler)
 
-    coach = cogmen.Coach(trainset, devset, testset, model, opt, sched, args)
+    run = None
+    if args.wandb:
+        with open(wandb_path, 'r') as f:
+            key = json.load(f)["api_key"]
+            wandb.login(relogin=True, key=key)
+            run = wandb.init(
+                project=args.wandb_project, 
+                name=args.wandb_run,
+                config={
+                    "learning_rate": args.learning_rate,
+                    "architecture": args.architecture,
+                    "dataset": args.dataset,
+                    "epochs": args.epochs,
+                }
+            )
+
+    coach = cogmen.Coach(trainset, devset, testset, model, opt, sched, args, log, run)
     if not args.from_begin:
         ckpt = torch.load(model_file)
         coach.load_ckpt(ckpt)
         print("Training from checkpoint...")
+
+    
 
     # Train
     log.info("Start training...")
@@ -224,6 +249,12 @@ if __name__ == "__main__":
     )
 
     # Model Architecture changes
+    parser.add_argument(
+        "--architecture", 
+        type=str, 
+        default="default",
+        choices=["default", "single_global_node", "single_global_node_classifier", "multiple_global_node", "multiple_globak_node_classifier"]
+    )
     parser.add_argument("--concat_gin_gout", action="store_true", default=False)
     parser.add_argument("--seqcontext_nlayer", type=int, default=2)
     parser.add_argument("--gnn_nheads", type=int, default=1)
@@ -232,6 +263,12 @@ if __name__ == "__main__":
 
     # others
     parser.add_argument("--seed", type=int, default=24, help="Random seed.")
+
+    parser.add_argument("--wandb", action="store_true", default=True)
+    parser.add_argument("--wandb_api_key", type=str, default=None)
+    parser.add_argument("--wandb_project", type=str, default="marg_icml2024")
+    parser.add_argument("--wandb_run", type=str, default=f"{datetime.now().strftime('%Y-%m-%d_%H:%M:%S')}")
+
     parser.add_argument(
         "--log_in_comet",
         action="store_true",
@@ -284,8 +321,6 @@ if __name__ == "__main__":
             "atv": 80 + 768 + 35,
         },
     }
-
-    log.debug(args)
 
     # Create an experiment with your api key
     if args.log_in_comet and not args.tuning:

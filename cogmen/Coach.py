@@ -9,11 +9,10 @@ from sklearn import metrics
 
 import cogmen
 
-log = cogmen.utils.get_logger()
 
 
 class Coach:
-    def __init__(self, trainset, devset, testset, model, opt, sched, args):
+    def __init__(self, trainset, devset, testset, model, opt, sched, args, log, run):
         self.trainset = trainset
         self.devset = devset
         self.testset = testset
@@ -54,6 +53,9 @@ class Coach:
         self.best_epoch = None
         self.best_state = None
 
+        self.log = log
+        self.run = run
+
     def load_ckpt(self, ckpt):
         self.best_dev_f1 = ckpt["best_dev_f1"]
         self.best_epoch = ckpt["best_epoch"]
@@ -62,7 +64,7 @@ class Coach:
         print("Loaded best model.....")
 
     def train(self):
-        log.debug(self.model)
+        self.log.debug(self.model)
         # Early stopping.
         best_dev_f1, best_epoch, best_state = (
             self.best_dev_f1,
@@ -83,7 +85,7 @@ class Coach:
             test_f1, _ = self.evaluate(test=True)
             if self.args.dataset == "mosei" and self.args.emotion == "multilabel":
                 test_f1 = np.array(list(test_f1.values())).mean()
-            log.info("[Dev set] [f1 {:.4f}]".format(dev_f1))
+            self.log.info("[Dev set] [f1 {:.4f}]".format(dev_f1))
             if best_dev_f1 is None or dev_f1 > best_dev_f1:
                 best_dev_f1 = dev_f1
                 best_test_f1 = test_f1
@@ -108,18 +110,29 @@ class Coach:
                         + ".pt",
                     )
 
-                log.info("Save the best model.")
-            log.info("[Test set] [f1 {:.4f}]".format(test_f1))
+                self.log.info("Save the best model.")
+            self.log.info("[Test set] [f1 {:.4f}]".format(test_f1))
 
             dev_f1s.append(dev_f1)
             test_f1s.append(test_f1)
             train_losses.append(train_loss)
+            if self.args.wandb:
+                self.run.log({
+                    "f1 (dev)": dev_f1,
+                    "f1 (test)": test_f1,
+                    "train_loss": train_loss,
+                    "val_loss": dev_loss,
+                })
             if self.args.log_in_comet or self.args.tuning:
                 self.args.experiment.log_metric("F1 Score (Dev)", dev_f1, epoch=epoch)
                 self.args.experiment.log_metric("F1 Score (test)", test_f1, epoch=epoch)
                 self.args.experiment.log_metric("train_loss", train_loss, epoch=epoch)
                 self.args.experiment.log_metric("val_loss", dev_loss, epoch=epoch)
-
+        if self.args.wandb:
+            self.run.log({
+                "best f1 (dev)": best_dev_f1,
+                "best f1 (test)": best_test_f1,
+            })
         if self.args.tuning:
             self.args.experiment.log_metric("best_dev_f1", best_dev_f1, epoch=epoch)
             self.args.experiment.log_metric("best_test_f1", best_test_f1, epoch=epoch)
@@ -129,12 +142,12 @@ class Coach:
         # The best
 
         self.model.load_state_dict(best_state)
-        log.info("")
-        log.info("Best in epoch {}:".format(best_epoch))
+        self.log.info("")
+        self.log.info("Best in epoch {}:".format(best_epoch))
         dev_f1, _ = self.evaluate()
-        log.info("[Dev set] [f1 {:.4f}]".format(dev_f1))
+        self.log.info("[Dev set] [f1 {:.4f}]".format(dev_f1))
         test_f1, _ = self.evaluate(test=True)
-        log.info("[Test set] f1 {}".format(test_f1))
+        self.log.info("[Test set] f1 {}".format(test_f1))
 
         return best_dev_f1, best_epoch, best_state, train_losses, dev_f1s, test_f1s
 
@@ -157,8 +170,8 @@ class Coach:
             self.opt.step()
 
         end_time = time.time()
-        log.info("")
-        log.info(
+        self.log.info("")
+        self.log.info(
             "[Epoch %d] [Loss: %f] [Time: %f]"
             % (epoch, epoch_loss, end_time - start_time)
         )
@@ -195,11 +208,11 @@ class Coach:
                 f1 = metrics.f1_score(golds, preds, average="weighted")
 
             if test:
-                print(
-                    metrics.classification_report(
+                report = metrics.classification_report(
                         golds, preds, target_names=self.label_to_idx.keys(), digits=4
                     )
-                )
+                print(report)
+                self.log.info(report)
 
                 if self.args.dataset == "mosei" and self.args.emotion == "multilabel":
                     happy = metrics.f1_score(

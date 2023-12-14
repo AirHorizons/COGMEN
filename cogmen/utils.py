@@ -5,6 +5,7 @@ import logging
 import numpy as np
 import torch
 import pickle
+from datetime import datetime
 
 
 def set_seed(seed):
@@ -19,7 +20,7 @@ def set_seed(seed):
     torch.backends.cudnn.deterministic = True  # use determinisitic algorithm
 
 
-def get_logger(level=logging.INFO):
+def get_logger(logger_name = 'marg', level=logging.INFO):
     log = logging.getLogger(__name__)
     if log.handlers:
         return log
@@ -30,6 +31,13 @@ def get_logger(level=logging.INFO):
     )
     ch.setFormatter(formatter)
     log.addHandler(ch)
+    if logger_name:
+        fh = logging.FileHandler(f'./logs/{logger_name}_{datetime.now().strftime("%Y-%m-%d_%H:%M:%S")}.log')
+        formatter = logging.Formatter(
+        fmt="%(asctime)s\n%(message)s", datefmt="%m/%d/%Y %I:%M:%S"
+        )
+        fh.setFormatter(formatter)
+        log.addHandler(fh)
     return log
 
 
