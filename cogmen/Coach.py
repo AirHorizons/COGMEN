@@ -51,6 +51,7 @@ class Coach:
 
         self.best_dev_f1 = None
         self.best_epoch = None
+        self.best_report = None
         self.best_state = None
 
         self.log = log
@@ -66,10 +67,11 @@ class Coach:
     def train(self):
         self.log.debug(self.model)
         # Early stopping.
-        best_dev_f1, best_epoch, best_state = (
+        best_dev_f1, best_epoch, best_state, best_report = (
             self.best_dev_f1,
             self.best_epoch,
             self.best_state,
+            self.best_report
         )
 
         dev_f1s = []
@@ -80,15 +82,16 @@ class Coach:
         # Train
         for epoch in range(1, self.args.epochs + 1):
             train_loss = self.train_epoch(epoch)
-            dev_f1, dev_loss = self.evaluate()
+            report, dev_f1, dev_loss = self.evaluate()
             self.scheduler.step(dev_loss)
-            test_f1, _ = self.evaluate(test=True)
+            report, test_f1, _ = self.evaluate(test=True)
             if self.args.dataset == "mosei" and self.args.emotion == "multilabel":
                 test_f1 = np.array(list(test_f1.values())).mean()
             self.log.info("[Dev set] [f1 {:.4f}]".format(dev_f1))
             if best_dev_f1 is None or dev_f1 > best_dev_f1:
                 best_dev_f1 = dev_f1
                 best_test_f1 = test_f1
+                best_report = report
                 best_epoch = epoch
                 best_state = copy.deepcopy(self.model.state_dict())
                 if self.args.dataset == "mosei":
@@ -122,20 +125,16 @@ class Coach:
                     "f1 (test)": test_f1,
                     "train_loss": train_loss,
                     "val_loss": dev_loss,
-                })
-            if self.args.log_in_comet or self.args.tuning:
-                self.args.experiment.log_metric("F1 Score (Dev)", dev_f1, epoch=epoch)
-                self.args.experiment.log_metric("F1 Score (test)", test_f1, epoch=epoch)
-                self.args.experiment.log_metric("train_loss", train_loss, epoch=epoch)
-                self.args.experiment.log_metric("val_loss", dev_loss, epoch=epoch)
+                    }
+                )
+                for label in self.dataset_label_dict[self.args.dataset]:
+                    for metric, value in report[label].items():
+                        self.run.log({f"{label}/{metric}": value})
         if self.args.wandb:
             self.run.log({
                 "best f1 (dev)": best_dev_f1,
                 "best f1 (test)": best_test_f1,
             })
-        if self.args.tuning:
-            self.args.experiment.log_metric("best_dev_f1", best_dev_f1, epoch=epoch)
-            self.args.experiment.log_metric("best_test_f1", best_test_f1, epoch=epoch)
 
             return best_dev_f1, best_epoch, best_state, train_losses, dev_f1s, test_f1s
 
@@ -144,10 +143,16 @@ class Coach:
         self.model.load_state_dict(best_state)
         self.log.info("")
         self.log.info("Best in epoch {}:".format(best_epoch))
-        dev_f1, _ = self.evaluate()
+        _, dev_f1, _ = self.evaluate()
         self.log.info("[Dev set] [f1 {:.4f}]".format(dev_f1))
-        test_f1, _ = self.evaluate(test=True)
+        _, test_f1, _ = self.evaluate(test=True)
         self.log.info("[Test set] f1 {}".format(test_f1))
+
+        for label in self.dataset_label_dict[self.args.dataset]:
+            for metric, value in best_report[label].items():
+                if self.args.wandb:
+                    self.run.log({f"best_{label}/{metric}": value})
+                self.log.info(f"best_{label}/{metric}: {value}")
 
         return best_dev_f1, best_epoch, best_state, train_losses, dev_f1s, test_f1s
 
@@ -181,6 +186,7 @@ class Coach:
         dev_loss = 0
         dataset = self.testset if test else self.devset
         self.model.eval()
+        report = None
         with torch.no_grad():
             golds = []
             preds = []
@@ -200,8 +206,6 @@ class Coach:
                 preds = torch.cat(preds, dim=0).numpy()
                 f1 = metrics.f1_score(golds, preds, average="weighted")
                 acc = metrics.accuracy_score(golds, preds)
-                if self.args.tuning:
-                    self.args.experiment.log_metric("dev_acc", acc)
             else:
                 golds = torch.cat(golds, dim=-1).numpy()
                 preds = torch.cat(preds, dim=-1).numpy()
@@ -209,10 +213,9 @@ class Coach:
 
             if test:
                 report = metrics.classification_report(
-                        golds, preds, target_names=self.label_to_idx.keys(), digits=4
+                        golds, preds, target_names=self.label_to_idx.keys(), digits=4, output_dict = True, zero_division = 0
                     )
-                print(report)
-                self.log.info(report)
+                self.log.info(str(report))
 
                 if self.args.dataset == "mosei" and self.args.emotion == "multilabel":
                     happy = metrics.f1_score(
@@ -241,26 +244,4 @@ class Coach:
                         "fear": fear,
                     }
 
-                if self.args.log_in_comet or self.args.tuning:
-                    self.args.experiment.log_confusion_matrix(
-                        golds,
-                        preds,
-                        labels=list(self.label_to_idx.keys()),
-                        overwrite=True,
-                    )
-
-                    if (
-                        self.args.dataset == "mosei"
-                        and self.args.emotion == "multilabel"
-                    ):
-                        self.args.experiment.log_metric(
-                            "accuracy score", metrics.accuracy_score(golds, preds)
-                        )
-                        self.args.experiment.log_metric("happiness_f1", happy)
-                        self.args.experiment.log_metric("sadness_f1", sad)
-                        self.args.experiment.log_metric("anger_f1", anger)
-                        self.args.experiment.log_metric("surprise_f1", surprise)
-                        self.args.experiment.log_metric("disgust_f1", disgust)
-                        self.args.experiment.log_metric("fear_f1", fear)
-
-        return f1, dev_loss
+        return report, f1, dev_loss

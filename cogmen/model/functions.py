@@ -3,10 +3,8 @@ import torch
 
 import cogmen
 
-log = cogmen.utils.get_logger()
 
-
-def batch_graphify(features, lengths, speaker_tensor, wp, wf, edge_type_to_idx, device):
+def batch_graphify(features, lengths, speaker_tensor, wp, wf, edge_type_to_idx, device, architecture, n_speakers=2):
     node_features, edge_index, edge_type = [], [], []
     batch_size = features.size(0)
     length_sum = 0
@@ -17,15 +15,26 @@ def batch_graphify(features, lengths, speaker_tensor, wp, wf, edge_type_to_idx, 
         edge_ind.append(edge_perms(lengths[j].cpu().item(), wp, wf))
 
     for j in range(batch_size):
+        global_offset = 1 if 'single_global_node' in architecture else 0
         cur_len = lengths[j].item()
-        node_features.append(features[j, :cur_len, :])
+        if 'single_global_node' in architecture:
+            # append last node as global node
+            # print(features[j, :cur_len, :].shape)
+            # print(features[j, -1, :].unsqueeze(0).shape)
+            # print(features[j, -1, :10])
+            # print(features[j, -2, :10])
+            feature = torch.cat([features[j, :cur_len, :], features[j, -1, :].unsqueeze(0)], dim = 0)
+        else:
+            feature = features[j, :cur_len, :]
+        node_features.append(feature)
         perms = edge_perms(cur_len, wp, wf)
+        # print(perms)
+        # print(length_sum)
         perms_rec = [(item[0] + length_sum, item[1] + length_sum) for item in perms]
-        length_sum += cur_len
-        edge_index_lengths.append(len(perms))
+        length_sum += cur_len + global_offset
+        edge_index_lengths.append(len(perms) + global_offset * cur_len)
         for item, item_rec in zip(perms, perms_rec):
             edge_index.append(torch.tensor([item_rec[0], item_rec[1]]))
-
             speaker1 = speaker_tensor[j, item[0]].item()
             speaker2 = speaker_tensor[j, item[1]].item()
             if item[0] < item[1]:
@@ -33,6 +42,18 @@ def batch_graphify(features, lengths, speaker_tensor, wp, wf, edge_type_to_idx, 
             else:
                 c = "1"
             edge_type.append(edge_type_to_idx[str(speaker1) + str(speaker2) + c])
+
+        if 'single_global_node' in architecture:
+            # adjust offset for global node
+            global_node_idx = length_sum - 1
+            for node_idx in range(cur_len):
+                # Connection from global node to current node
+                edge_index.append(torch.tensor([global_node_idx, global_node_idx - cur_len + node_idx]))
+                edge_type.append(edge_type_to_idx["single_global_node"])
+        # print(edge_index[:10])
+        # print(edge_index[-10:])
+        # print(edge_index)
+        # print(edge_type)
 
     node_features = torch.cat(node_features, dim=0).to(device)  # [E, D_g]
     edge_index = torch.stack(edge_index).t().contiguous().to(device)  # [2, E]

@@ -20,7 +20,7 @@ class Classifier(nn.Module):
             self.highway = nn.Identity()
         self.lin1 = nn.Linear(input_dim, hidden_size)
         self.drop = nn.Dropout(args.drop_rate)
-        self.lin2 = nn.Linear(hidden_size, tag_size)
+        self.lin2 = nn.Linear(hidden_size + (1 if 'classifier' in self.args.architecture else 0), tag_size)
         self.lin_7 = nn.Linear(hidden_size, 7)
         self.linear = nn.Linear(input_dim, tag_size)
         if args.class_weight:
@@ -116,6 +116,10 @@ class Classifier(nn.Module):
         if self.args.emotion == "7class":
             scores = self.lin_7(hidden)
         else:
+            if 'classifier' in self.args.architecture:
+                global_feature = hidden.mean(dim=1)
+                global_feature_expanded = global_feature.view(-1, 1).repeat(1, 1)
+                hidden = torch.cat([global_feature_expanded, hidden], dim=1)
             scores = self.lin2(hidden)
         log_prob = F.log_softmax(scores, dim=1)
         return log_prob
@@ -139,6 +143,12 @@ class Classifier(nn.Module):
             if self.args.use_highway:
                 h = self.highway(h)
             hidden = self.drop(F.relu(self.lin1(h)))
+
+            if 'classifier' in self.args.architecture:
+                global_feature = hidden.mean(dim=1)
+                global_feature_expanded = global_feature.view(-1, 1).repeat(1, 1)
+                hidden = torch.cat([global_feature_expanded, hidden], dim=1)
+
             scores = self.lin2(hidden)
             loss = self.bce_loss(scores, label_tensor.float())
             if self.args.class_weight:

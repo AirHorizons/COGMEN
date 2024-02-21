@@ -84,7 +84,7 @@ def main(args):
         model_file = "./model_checkpoints/" + str(args.experiment.get_key()) + ".pt"
     else:
         model_file = "./model_checkpoints/model.pt"
-    model = cogmen.COGMEN(args).to(args.device)
+    model = cogmen.COGMEN(args, log).to(args.device)
     opt = cogmen.Optim(args.learning_rate, args.max_grad_value, args.weight_decay)
     opt.set_parameters(model.parameters(), args.optimizer)
     sched = opt.get_scheduler(args.scheduler)
@@ -92,14 +92,22 @@ def main(args):
     run = None
     if args.wandb:
         with open(wandb_path, 'r') as f:
-            key = json.load(f)["api_key"]
+            auth_data = json.load(f)
+            key = auth_data["api_key"]
+            entity = auth_data["entity"]
             wandb.login(relogin=True, key=key)
+            prefix = f'{args.wandb_run}__{args.dataset}__{args.modalities}__{args.architecture}__'
+            args.wandb_run = prefix + datetime.now().strftime('%Y-%m-%d_%H:%M:%S')
+            
+            
             run = wandb.init(
-                project=args.wandb_project, 
+                project=args.wandb_project,
+                entity=entity,
                 name=args.wandb_run,
                 config={
                     "learning_rate": args.learning_rate,
                     "architecture": args.architecture,
+                    "modalities": args.modalities,
                     "dataset": args.dataset,
                     "epochs": args.epochs,
                 }
@@ -253,8 +261,34 @@ if __name__ == "__main__":
         "--architecture", 
         type=str, 
         default="default",
-        choices=["default", "single_global_node", "single_global_node_classifier", "multiple_global_node", "multiple_globak_node_classifier"]
+        choices=[
+            "default",
+            "classifier",
+            "single_global_node", 
+            "single_global_node_classifier", 
+            "multiple_global_node", 
+            "multiple_global_node_classifier",
+            "all_global_node",
+            "all_global_node_classifier"
+        ]
     )
+
+    parser.add_argument(
+        "--global_node_type",
+        type=str,
+        default='single'
+    )
+    parser.add_argument(
+        "--global_aggregate_method",
+        type=str,
+        default='mean',
+        choices=[
+            'mean',
+            'weight',
+            'linear'
+        ]
+    )
+
     parser.add_argument("--concat_gin_gout", action="store_true", default=False)
     parser.add_argument("--seqcontext_nlayer", type=int, default=2)
     parser.add_argument("--gnn_nheads", type=int, default=1)
@@ -262,12 +296,12 @@ if __name__ == "__main__":
     parser.add_argument("--use_highway", action="store_true", default=False)
 
     # others
-    parser.add_argument("--seed", type=int, default=24, help="Random seed.")
+    parser.add_argument("--seed", type=int, default=2024, help="Random seed.")
 
-    parser.add_argument("--wandb", action="store_true", default=True)
+    parser.add_argument("--wandb", action="store_true", default=False)
     parser.add_argument("--wandb_api_key", type=str, default=None)
-    parser.add_argument("--wandb_project", type=str, default="marg_icml2024")
-    parser.add_argument("--wandb_run", type=str, default=f"{datetime.now().strftime('%Y-%m-%d_%H:%M:%S')}")
+    parser.add_argument("--wandb_project", type=str, default="marg_acm2024")
+    parser.add_argument("--wandb_run", type=str, default='default')
 
     parser.add_argument(
         "--log_in_comet",
